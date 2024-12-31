@@ -1265,7 +1265,7 @@ async def v1_chat_completions(tokenizer_manager, raw_request: Request):
                             index=index,
                             delta=DeltaMessage(role="assistant", content=""),
                             finish_reason=(
-                                finish_reason["type"] if finish_reason else ""
+                                finish_reason["type"] if finish_reason else None
                             ),
                             matched_stop=(
                                 finish_reason["matched"]
@@ -1293,7 +1293,7 @@ async def v1_chat_completions(tokenizer_manager, raw_request: Request):
                     choice_data = ChatCompletionResponseStreamChoice(
                         index=index,
                         delta=DeltaMessage(content=delta),
-                        finish_reason=(finish_reason["type"] if finish_reason else ""),
+                        finish_reason=(finish_reason["type"] if finish_reason else None),
                         matched_stop=(
                             finish_reason["matched"]
                             if finish_reason and "matched" in finish_reason
