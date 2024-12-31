@@ -706,6 +706,13 @@ async def v1_completions(tokenizer_manager, raw_request: Request):
             n_prev_tokens = {}
             prompt_tokens = {}
             completion_tokens = {}
+            stream_options = request.stream_options
+            if stream_options:
+                include_usage = stream_options.include_usage
+                include_continuous_usage = include_usage and \
+                                           stream_options.continuous_usage_stats
+            else:
+                include_usage, include_continuous_usage = False, False
             try:
                 async for content in tokenizer_manager.generate_request(
                     adapted_request, raw_request
@@ -794,12 +801,18 @@ async def v1_completions(tokenizer_manager, raw_request: Request):
                         choices=[choice_data],
                         model=request.model,
                     )
+                    if include_continuous_usage:
+                        chunk.usage = UsageInfo(
+                            prompt_tokens=prompt_tokens[index],
+                            completion_tokens=completion_tokens[index],
+                            total_tokens=prompt_tokens[index] + completion_tokens[index],
+                        )
 
                     stream_buffers[index] = stream_buffer
                     n_prev_tokens[index] = n_prev_token
 
                     yield f"data: {chunk.model_dump_json()}\n\n"
-                if request.stream_options and request.stream_options.include_usage:
+                if include_usage:
                     total_prompt_tokens = sum(
                         tokens
                         for i, tokens in prompt_tokens.items()
@@ -1179,6 +1192,13 @@ async def v1_chat_completions(tokenizer_manager, raw_request: Request):
             n_prev_tokens = {}
             prompt_tokens = {}
             completion_tokens = {}
+            stream_options = request.stream_options
+            if stream_options:
+                include_usage = stream_options.include_usage
+                include_continuous_usage = include_usage and \
+                                           stream_options.continuous_usage_stats
+            else:
+                include_usage, include_continuous_usage = False, False
             try:
                 async for content in tokenizer_manager.generate_request(
                     adapted_request, raw_request
@@ -1259,6 +1279,12 @@ async def v1_chat_completions(tokenizer_manager, raw_request: Request):
                             choices=[choice_data],
                             model=request.model,
                         )
+                        if include_continuous_usage:
+                            chunk.usage = UsageInfo(
+                                prompt_tokens=prompt_tokens[index],
+                                completion_tokens=0,
+                                total_tokens=prompt_tokens[index],
+                            )
                         yield f"data: {chunk.model_dump_json()}\n\n"
 
                     text = content["text"]
@@ -1280,13 +1306,19 @@ async def v1_chat_completions(tokenizer_manager, raw_request: Request):
                         choices=[choice_data],
                         model=request.model,
                     )
+                    if include_continuous_usage:
+                        chunk.usage = UsageInfo(
+                            prompt_tokens=prompt_tokens[index],
+                            completion_tokens=completion_tokens[index],
+                            total_tokens=prompt_tokens[index] + completion_tokens[index],
+                        )
 
                     is_firsts[index] = is_first
                     stream_buffers[index] = stream_buffer
                     n_prev_tokens[index] = n_prev_token
 
                     yield f"data: {chunk.model_dump_json()}\n\n"
-                if request.stream_options and request.stream_options.include_usage:
+                if include_usage:
                     total_prompt_tokens = sum(
                         tokens
                         for i, tokens in prompt_tokens.items()

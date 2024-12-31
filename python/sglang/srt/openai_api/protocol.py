@@ -80,6 +80,7 @@ class UsageInfo(BaseModel):
 
 class StreamOptions(BaseModel):
     include_usage: Optional[bool] = False
+    continuous_usage_stats: Optional[bool] = False
 
 
 class JsonSchemaResponseFormat(BaseModel):
