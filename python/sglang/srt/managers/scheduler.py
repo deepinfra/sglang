@@ -1167,9 +1167,16 @@ class Scheduler(
             self.stats.cache_hit_rate = cache_hit_rate
 
             total_queue_latency = 0
+            valid_requests = 0
             for req in can_run_list:
-                total_queue_latency += req.queue_time_end - req.queue_time_start
-            self.stats.avg_request_queue_latency = total_queue_latency / num_new_seq
+                if req.queue_time_start is not None and req.queue_time_end is not None:
+                    total_queue_latency += req.queue_time_end - req.queue_time_start
+                    valid_requests += 1
+            
+            if valid_requests > 0:
+                self.stats.avg_request_queue_latency = total_queue_latency / valid_requests
+            else:
+                self.stats.avg_request_queue_latency = 0.0
 
             self.metrics_collector.log_stats(self.stats)
 
