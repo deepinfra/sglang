@@ -24,6 +24,7 @@ from utils import (
     CI_MULTI_LORA_MODELS,
     TORCH_DTYPES,
     LoRAModelCase,
+    ensure_reproducibility,
 )
 
 from sglang.test.runners import HFRunner, SRTRunner
@@ -76,13 +77,6 @@ class TestLoRA(CustomTestCase):
 
         return batches
 
-    def ensure_reproducibility(self):
-        seed = 42
-        random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch.use_deterministic_algorithms(True)
-
     def _run_lora_multiple_batch_on_model_cases(self, model_cases: List[LoRAModelCase]):
         for model_case in model_cases:
             for torch_dtype in TORCH_DTYPES:
@@ -104,7 +98,6 @@ class TestLoRA(CustomTestCase):
                     lora_paths=[lora_adapter_paths[0], lora_adapter_paths[1]],
                     max_loras_per_batch=len(lora_adapter_paths) + 1,
                     lora_backend=backend,
-                    disable_radix_cache=True,
                     sleep_on_idle=True,  # Eliminate non-determinism by forcing all requests to be processed in one batch.
                     attention_backend="torch_native",
                 )
@@ -122,14 +115,14 @@ class TestLoRA(CustomTestCase):
                             f"\n--- Running Batch {i} --- prompts: {prompts}, lora_paths: {lora_paths}"
                         )
 
-                        self.ensure_reproducibility()
+                        ensure_reproducibility()
                         srt_outputs = srt_runner.batch_forward(
                             prompts,
                             max_new_tokens=max_new_tokens,
                             lora_paths=lora_paths,
                         )
 
-                        self.ensure_reproducibility()
+                        ensure_reproducibility()
                         hf_outputs = hf_runner.forward(
                             prompts,
                             max_new_tokens=max_new_tokens,
