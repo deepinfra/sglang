@@ -268,6 +268,13 @@ class SchedulerMetricsCollector:
             labelnames=labels.keys(),
         )
 
+        # Engine iteration counter (increments once per decode engine step on last PP rank)
+        self.engine_iterations_total = Counter(
+            name="sglang:engine_iterations_total",
+            documentation="Count of decode engine steps executed (monotonic).",
+            labelnames=labels.keys(),
+        )
+
     def _log_gauge(self, gauge, data: Union[int, float]) -> None:
         # Convenience function for logging to gauge.
         gauge.labels(**self.labels).set(data)
@@ -304,6 +311,9 @@ class SchedulerMetricsCollector:
         )
 
         self.last_log_time = time.perf_counter()
+
+    def increment_engine_iterations(self, value: int = 1) -> None:
+        self.engine_iterations_total.labels(**self.labels).inc(value)
 
 
 class TokenizerMetricsCollector:

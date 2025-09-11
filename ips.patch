@@ -1,0 +1,49 @@
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 3856bf25..b409011c 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -1790,6 +1790,16 @@ class Scheduler(
+         elif batch.forward_mode.is_dummy_first():
+             self.set_next_batch_sampling_info_done(batch)
+ 
++        # Increment engine iteration counter after a full decode step is processed
++        if (
++            self.enable_metrics
++            and hasattr(self, "metrics_collector")
++            and self.pp_group.is_last_rank
++            and batch.forward_mode.is_decode()
++            and self.is_generation
++        ):
++            self.metrics_collector.increment_engine_iterations()
++
+         self.maybe_send_health_check_signal()
+ 
+     def maybe_send_health_check_signal(self):
+diff --git a/python/sglang/srt/metrics/collector.py b/python/sglang/srt/metrics/collector.py
+index 4c32b8fc..f95ebb23 100644
+--- a/python/sglang/srt/metrics/collector.py
++++ b/python/sglang/srt/metrics/collector.py
+@@ -268,6 +268,13 @@ class SchedulerMetricsCollector:
+             labelnames=labels.keys(),
+         )
+ 
++        # Engine iteration counter (increments once per decode engine step on last PP rank)
++        self.engine_iterations_total = Counter(
++            name="sglang:engine_iterations_total",
++            documentation="Count of decode engine steps executed (monotonic).",
++            labelnames=labels.keys(),
++        )
++
+     def _log_gauge(self, gauge, data: Union[int, float]) -> None:
+         # Convenience function for logging to gauge.
+         gauge.labels(**self.labels).set(data)
+@@ -305,6 +312,9 @@ class SchedulerMetricsCollector:
+ 
+         self.last_log_time = time.perf_counter()
+ 
++    def increment_engine_iterations(self, value: int = 1) -> None:
++        self.engine_iterations_total.labels(**self.labels).inc(value)
++
+ 
+ class TokenizerMetricsCollector:
+     def __init__(
