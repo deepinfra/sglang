@@ -2316,6 +2316,16 @@ class Scheduler(
                 if result.copy_done is not None:
                     result.copy_done.synchronize()
 
+        # Increment engine iteration counter after a full decode step is processed
+        if (
+            self.enable_metrics
+            and hasattr(self, "metrics_collector")
+            and self.pp_group.is_last_rank
+            and batch.forward_mode.is_decode()
+            and self.is_generation
+        ):
+            self.metrics_collector.increment_engine_iterations()
+
         self.maybe_send_health_check_signal()
 
     def maybe_send_health_check_signal(self):
