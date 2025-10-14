@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use tracing::info;
 
 /// Circuit breaker configuration
 #[derive(Debug, Clone)]
@@ -82,14 +83,13 @@ impl CircuitBreaker {
 
     /// Check if a request can be executed
     pub fn can_execute(&self) -> bool {
-        // First check if we need to transition from Open to HalfOpen
         self.check_and_update_state();
 
         let state = *self.state.read().unwrap();
         match state {
             CircuitState::Closed => true,
             CircuitState::Open => false,
-            CircuitState::HalfOpen => true, // Allow limited requests in half-open state
+            CircuitState::HalfOpen => true,
         }
     }
 
@@ -118,16 +118,12 @@ impl CircuitBreaker {
 
         match current_state {
             CircuitState::HalfOpen => {
-                // Check if we've reached the success threshold to close the circuit
                 if successes >= self.config.success_threshold {
                     self.transition_to(CircuitState::Closed);
                 }
             }
-            CircuitState::Closed => {
-                // Already closed, nothing to do
-            }
+            CircuitState::Closed => {}
             CircuitState::Open => {
-                // Shouldn't happen, but if it does, stay open
                 tracing::warn!("Success recorded while circuit is open");
             }
         }
@@ -139,7 +135,6 @@ impl CircuitBreaker {
         self.consecutive_successes.store(0, Ordering::Release);
         let failures = self.consecutive_failures.fetch_add(1, Ordering::AcqRel) + 1;
 
-        // Update last failure time
         {
             let mut last_failure = self.last_failure_time.write().unwrap();
             *last_failure = Some(Instant::now());
@@ -149,18 +144,14 @@ impl CircuitBreaker {
 
         match current_state {
             CircuitState::Closed => {
-                // Check if we've reached the failure threshold to open the circuit
                 if failures >= self.config.failure_threshold {
                     self.transition_to(CircuitState::Open);
                 }
             }
             CircuitState::HalfOpen => {
-                // Single failure in half-open state reopens the circuit
                 self.transition_to(CircuitState::Open);
             }
-            CircuitState::Open => {
-                // Already open, nothing to do
-            }
+            CircuitState::Open => {}
         }
     }
 
@@ -169,7 +160,6 @@ impl CircuitBreaker {
         let current_state = *self.state.read().unwrap();
 
         if current_state == CircuitState::Open {
-            // Check if timeout has expired
             let last_change = *self.last_state_change.read().unwrap();
             if last_change.elapsed() >= self.config.timeout_duration {
                 self.transition_to(CircuitState::HalfOpen);
@@ -185,11 +175,9 @@ impl CircuitBreaker {
         if old_state != new_state {
             *state = new_state;
 
-            // Update last state change time
             let mut last_change = self.last_state_change.write().unwrap();
             *last_change = Instant::now();
 
-            // Reset counters based on transition
             match new_state {
                 CircuitState::Closed => {
                     self.consecutive_failures.store(0, Ordering::Release);
@@ -204,11 +192,17 @@ impl CircuitBreaker {
                 }
             }
 
-            tracing::info!(
-                "Circuit breaker state transition: {} -> {}",
-                old_state,
-                new_state
-            );
+            let from = match old_state {
+                CircuitState::Closed => "closed",
+                CircuitState::Open => "open",
+                CircuitState::HalfOpen => "half_open",
+            };
+            let to = match new_state {
+                CircuitState::Closed => "closed",
+                CircuitState::Open => "open",
+                CircuitState::HalfOpen => "half_open",
+            };
+            info!("Circuit breaker state transition: {} -> {}", from, to);
         }
     }
 
@@ -342,7 +336,6 @@ mod tests {
         };
         let cb = CircuitBreaker::with_config(config);
 
-        // Record failures up to threshold
         assert_eq!(cb.state(), CircuitState::Closed);
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Closed);
@@ -350,7 +343,6 @@ mod tests {
         assert_eq!(cb.state(), CircuitState::Closed);
         cb.record_failure();
 
-        // Circuit should now be open
         assert_eq!(cb.state(), CircuitState::Open);
         assert!(!cb.can_execute());
         assert_eq!(cb.failure_count(), 3);
@@ -365,14 +357,11 @@ mod tests {
         };
         let cb = CircuitBreaker::with_config(config);
 
-        // Open the circuit
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
 
-        // Wait for timeout
         thread::sleep(Duration::from_millis(150));
 
-        // Circuit should be half-open
         assert_eq!(cb.state(), CircuitState::HalfOpen);
         assert!(cb.can_execute());
     }
@@ -387,20 +376,16 @@ mod tests {
         };
         let cb = CircuitBreaker::with_config(config);
 
-        // Open the circuit
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
 
-        // Wait for timeout
         thread::sleep(Duration::from_millis(100));
         assert_eq!(cb.state(), CircuitState::HalfOpen);
 
-        // Record successes
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::HalfOpen);
         cb.record_success();
 
-        // Circuit should now be closed
         assert_eq!(cb.state(), CircuitState::Closed);
         assert!(cb.can_execute());
     }
@@ -414,18 +399,14 @@ mod tests {
         };
         let cb = CircuitBreaker::with_config(config);
 
-        // Open the circuit
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
 
-        // Wait for timeout
         thread::sleep(Duration::from_millis(100));
         assert_eq!(cb.state(), CircuitState::HalfOpen);
 
-        // Record a failure in half-open state
         cb.record_failure();
 
-        // Circuit should reopen immediately
         assert_eq!(cb.state(), CircuitState::Open);
         assert!(!cb.can_execute());
     }
@@ -438,17 +419,14 @@ mod tests {
         };
         let cb = CircuitBreaker::with_config(config);
 
-        // Record some failures
         cb.record_failure();
         cb.record_failure();
         assert_eq!(cb.failure_count(), 2);
 
-        // Success should reset failure count
         cb.record_success();
         assert_eq!(cb.failure_count(), 0);
         assert_eq!(cb.success_count(), 1);
 
-        // Can now record more failures without opening
         cb.record_failure();
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Closed);
@@ -462,11 +440,9 @@ mod tests {
         };
         let cb = CircuitBreaker::with_config(config);
 
-        // Open the circuit
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
 
-        // Manual reset
         cb.reset();
         assert_eq!(cb.state(), CircuitState::Closed);
         assert_eq!(cb.failure_count(), 0);
@@ -511,7 +487,6 @@ mod tests {
         let cb2 = cb1.clone();
         assert_eq!(cb2.failure_count(), 1);
 
-        // Changes to cb1 affect cb2 (shared state)
         cb1.record_failure();
         assert_eq!(cb2.failure_count(), 2);
     }
@@ -523,7 +498,6 @@ mod tests {
         let cb = Arc::new(CircuitBreaker::new());
         let mut handles = vec![];
 
-        // Spawn threads that record failures
         for _ in 0..10 {
             let cb_clone = Arc::clone(&cb);
             let handle = thread::spawn(move || {
@@ -534,12 +508,10 @@ mod tests {
             handles.push(handle);
         }
 
-        // Wait for all threads
         for handle in handles {
             handle.join().unwrap();
         }
 
-        // Should have recorded 1000 failures
         assert_eq!(cb.total_failures(), 1000);
     }
 }

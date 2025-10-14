@@ -51,6 +51,7 @@ import logging
 import multiprocessing
 import os
 import time
+from types import SimpleNamespace
 from typing import Tuple
 
 import numpy as np
@@ -60,8 +61,7 @@ import torch.distributed as dist
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import destroy_distributed_environment
 from sglang.srt.entrypoints.engine import _set_envs_and_config
-from sglang.srt.hf_transformers_utils import get_tokenizer
-from sglang.srt.layers.moe.utils import DeepEPMode, MoeA2ABackend
+from sglang.srt.layers.moe import initialize_moe_config
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -78,6 +78,7 @@ from sglang.srt.utils import (
     set_gpu_proc_affinity,
     suppress_other_loggers,
 )
+from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
 
 @dataclasses.dataclass
@@ -204,7 +205,6 @@ def prepare_inputs_for_correctness_test(bench_args, tokenizer, custom_prompts):
             origin_input_ids=tmp_input_ids,
             sampling_params=sampling_params,
         )
-        req.prefix_indices = []
         req.fill_ids = req.origin_input_ids
         req.extend_input_len = len(req.fill_ids) - len(req.prefix_indices)
         req.logprob_start_len = len(req.origin_input_ids) - 1
@@ -248,7 +248,6 @@ def prepare_synthetic_inputs_for_latency_test(
             origin_input_ids=list(input_ids[i]),
             sampling_params=sampling_params,
         )
-        req.prefix_indices = []
         req.fill_ids = req.origin_input_ids
         req.extend_input_len = len(req.fill_ids) - len(req.prefix_indices)
         req.logprob_start_len = len(req.origin_input_ids) - 1
@@ -259,15 +258,21 @@ def prepare_synthetic_inputs_for_latency_test(
 
 @torch.no_grad
 def extend(reqs, model_runner):
+    # Create dummy tree_cache for benchmarks (no prefix caching, just allocation)
+    dummy_tree_cache = SimpleNamespace(
+        page_size=1,
+        device=model_runner.device,
+        token_to_kv_pool_allocator=model_runner.token_to_kv_pool_allocator,
+    )
+
     batch = ScheduleBatch.init_new(
         reqs=reqs,
         req_to_token_pool=model_runner.req_to_token_pool,
         token_to_kv_pool_allocator=model_runner.token_to_kv_pool_allocator,
-        tree_cache=None,
+        tree_cache=dummy_tree_cache,
         model_config=model_runner.model_config,
         enable_overlap=False,
         spec_algorithm=SpeculativeAlgorithm.NONE,
-        enable_custom_logit_processor=False,
     )
     batch.prepare_for_extend()
     _maybe_prepare_mlp_sync_batch(batch, model_runner)
@@ -301,11 +306,6 @@ def _maybe_prepare_mlp_sync_batch(batch: ScheduleBatch, model_runner):
             disable_cuda_graph=model_runner.server_args.disable_cuda_graph,
             spec_algorithm=SpeculativeAlgorithm.NONE,
             speculative_num_draft_tokens=None,
-            enable_two_batch_overlap=model_runner.server_args.enable_two_batch_overlap,
-            enable_deepep_moe=MoeA2ABackend(
-                model_runner.server_args.moe_a2a_backend
-            ).is_deepep(),
-            deepep_mode=DeepEPMode(model_runner.server_args.deepep_mode),
             require_mlp_tp_gather=require_mlp_tp_gather(model_runner.server_args),
             disable_overlap_schedule=model_runner.server_args.disable_overlap_schedule,
         )
@@ -449,11 +449,9 @@ def latency_test_run_once(
 
     if profile:
         profiler.stop()
-        profile_filename = f"{profile_filename_prefix}_batch{batch_size}_input{input_len}_output{output_len}_prefill.trace.json.gz"
-        _save_profile_trace_results(profiler, profile_filename)
-        rank_print(
-            f"torch profiler chrome trace for prefill saved to {profile_filename}"
-        )
+        trace_filename = f"{profile_filename_prefix}_batch{batch_size}_input{input_len}_output{output_len}_prefill.trace.json.gz"
+        _save_profile_trace_results(profiler, trace_filename)
+        rank_print(f"torch profiler chrome trace for prefill saved to {trace_filename}")
 
     # Decode
     decode_latencies = []
@@ -485,10 +483,10 @@ def latency_test_run_once(
 
         if profile and i == output_len / 2:
             profiler.stop()
-            profile_filename = f"{profile_filename_prefix}_batch{batch_size}_input{input_len}_output{output_len}_decode.trace.json.gz"
-            _save_profile_trace_results(profiler, profile_filename)
+            trace_filename = f"{profile_filename_prefix}_batch{batch_size}_input{input_len}_output{output_len}_decode.trace.json.gz"
+            _save_profile_trace_results(profiler, trace_filename)
             rank_print(
-                f"torch profiler chrome trace for decoding 1 token saved to {profile_filename}"
+                f"torch profiler chrome trace for decoding 1 token saved to {trace_filename}"
             )
 
     # Record decode timing from 2nd output
@@ -516,9 +514,13 @@ def latency_test(
     bench_args,
     tp_rank,
 ):
+    initialize_moe_config(server_args)
+
     # Set CPU affinity
     if get_bool_env_var("SGLANG_SET_CPU_AFFINITY"):
-        set_gpu_proc_affinity(server_args.tp_size, server_args.nnodes, tp_rank)
+        set_gpu_proc_affinity(
+            server_args.pp_size, server_args.tp_size, server_args.nnodes, tp_rank
+        )
 
     # Configure the logger
     configure_logger(server_args, prefix=f" TP{tp_rank}")
